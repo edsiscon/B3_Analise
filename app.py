@@ -63,7 +63,7 @@ try:
 
     st.sidebar.subheader("Intervalo Temporal")
     di = st.sidebar.date_input("Data Inicial (di):", pd.to_datetime("2026-09-01"))
-    df_data = st.sidebar.date_input("Data Final (df):", pd.to_datetime("2026-10-30"))
+    df_data = st.sidebar.date_input("Data Final (df):", pd.to_datetime("2026-11-06"))
 
     st.sidebar.subheader("📈 Índices de Mercado (Yahoo Finance)")
     indices_selecionados = st.sidebar.multiselect(
