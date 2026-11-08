@@ -20,11 +20,11 @@ st.set_page_config(
 
 col_logo, col_titulo = st.columns([1, 6])
 with col_logo:
-    st.image(CAMINHO_LOGO, width=90)  # Ajuste o tamanho da logo aqui se precisar
+    st.image(caminho_logo, width=90)  # Ajuste o tamanho da logo aqui se precisar
 
 with col_titulo:
     st.title(
-        "📊 Análise de Volume, Liquidez, Preços e Fluxo vs Índices (Eleições 2026)"
+        "Análise de Volume, Liquidez, Preços e Fluxo vs Índices (Eleições 2026)"
     )
 
 st.markdown("---")
