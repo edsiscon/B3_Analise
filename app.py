@@ -18,6 +18,7 @@ st.set_page_config(
     layout="wide",
 )
 
+col_logo, col_titulo = st.columns([1, 6])
 with col_logo:
     st.image(CAMINHO_LOGO, width=90)  # Ajuste o tamanho da logo aqui se precisar
 
