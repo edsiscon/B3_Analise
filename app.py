@@ -18,9 +18,15 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title(
-    "📊 Análise de Volume, Liquidez, Preços e Fluxo vs Índices (Eleições 2026)"
-)
+with col_logo:
+    st.image(CAMINHO_LOGO, width=90)  # Ajuste o tamanho da logo aqui se precisar
+
+with col_titulo:
+    st.title(
+        "📊 Análise de Volume, Liquidez, Preços e Fluxo vs Índices (Eleições 2026)"
+    )
+
+st.markdown("---")
 
 
 @st.cache_data(ttl=3600)
