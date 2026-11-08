@@ -15,6 +15,9 @@ st.set_page_config(
     page_title="Dashboard B3 - Eleições 2026, Liquidez & Índices",
     layout="wide",
 )
+
+caminho_logo = "logouff_vertical_azul-1.png"
+
 st.title(
     "📊 Análise de Volume, Liquidez, Preços e Fluxo vs Índices (Eleições 2026)"
 )
@@ -83,6 +86,7 @@ def buscar_noticias_rss_google(ticker, data_inicio, data_fim, limit=5):
 
 # --- BARRA LATERAL (INPUTS) ---
 st.sidebar.header("⚙️ Parâmetros da Análise")
+st.sidebar.image(caminho_logo, use_column_width=True)
 
 # Ticker via input de texto simples (sem ler do banco)
 ticker_selecionado = st.sidebar.text_input(
