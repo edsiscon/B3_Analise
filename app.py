@@ -5,6 +5,7 @@ import feedparser
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 from config import engine
 
@@ -184,6 +185,16 @@ categorias_selecionadas = st.sidebar.multiselect(
     "Selecione as categorias:",
     options=categorias_disponiveis,
     default=categorias_disponiveis,
+)
+
+components.html(
+    f"""
+    <script>
+        window.parent.console.log("Realizado por: Gabriel, Maria e Carlos Eduardo (2026.02)");
+    </script>
+    """,
+    height=0,
+    width=0,
 )
 
 # --- PROCESSAMENTO E GRÁFICOS ---
@@ -680,3 +691,4 @@ if ticker_selecionado and di and df_data:
         st.error(
             "⚠️ Ocorreu um erro ao buscar as informações. Verifique a conexão com o banco de dados."
         )
+
