@@ -10,39 +10,45 @@ from config import engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-        
-caminho_logo = "logouff_vertical_azul-1.png"
+
+CAMINHO_LOGO = "logo.png"
+
 st.set_page_config(
-    page_title="Dashboard B3 - Eleições 2026, Liquidez & Índices",
-    page_icon=caminho_logo,
+    page_title="Dashboard B3 - Liquidez & Índices",
+    page_icon=CAMINHO_LOGO,
     layout="wide",
 )
 
+# Cabeçalho com Logo
 col_logo, col_titulo = st.columns([1, 6])
 with col_logo:
-    st.image(caminho_logo, width=90)  # Ajuste o tamanho da logo aqui se precisar
-
+    try:
+        st.image(CAMINHO_LOGO, width=90)
+    except Exception:
+        pass
 with col_titulo:
-    st.title(
-        "Análise de Volume, Liquidez, Preços e Fluxo vs Índices (Eleições 2026)"
-    )
+    st.title("📊 Análise de Volume, Liquidez, Preços e Fluxo vs Índices")
 
 st.markdown("---")
 
 
+# --- FUNÇÕES DE DADOS E CACHE ---
 @st.cache_data(ttl=3600)
 def carregar_indice_yfinance(symbol, di, df_data):
-    """Carrega os dados históricos de um índice de mercado via yfinance."""
+    """Carrega histórico via yfinance e calcula variação percentual diária."""
     try:
+        # Busca 5 dias antes de 'di' para calcular a variação % do primeiro dia do filtro
+        inicio_busca = pd.to_datetime(di) - pd.Timedelta(days=5)
         df_idx = yf.download(
-            symbol, start=di, end=df_data + pd.Timedelta(days=1), progress=False
+            symbol,
+            start=inicio_busca,
+            end=pd.to_datetime(df_data) + pd.Timedelta(days=1),
+            progress=False,
         )
         if not df_idx.empty:
             if isinstance(df_idx.columns, pd.MultiIndex):
                 df_idx.columns = df_idx.columns.get_level_values(0)
             df_idx = df_idx.reset_index()
-
-            # Evita o Pandas4Warning (sem inplace=True)
             df_idx = df_idx.rename(
                 columns={
                     "Date": "data_pregao",
@@ -53,29 +59,34 @@ def carregar_indice_yfinance(symbol, di, df_data):
             df_idx["data_pregao"] = pd.to_datetime(
                 df_idx["data_pregao"]
             ).dt.tz_localize(None)
-            return df_idx[["data_pregao", "fechamento", "volume"]]
+            df_idx = df_idx.sort_values("data_pregao")
+            df_idx["var_pct"] = df_idx["fechamento"].pct_change() * 100.0
+
+            # Filtra de volta para o intervalo exato selecionado pelo usuário
+            df_idx = df_idx[df_idx["data_pregao"] >= pd.to_datetime(di)]
+            return df_idx[["data_pregao", "fechamento", "volume", "var_pct"]]
     except Exception as e:
-        logger.warning(
-            f"Não foi possível carregar o índice {symbol} via Yahoo Finance: {e}"
-        )
+        logger.warning(f"Erro ao carregar índice {symbol}: {e}")
     return pd.DataFrame()
 
 
 @st.cache_data(ttl=1800)
-def buscar_noticias_rss_google(ticker, data_inicio, data_fim, limit=5):
-    """Busca notícias reais via RSS do Google usando apenas o nome do Ticker."""
+def buscar_noticias_ibovespa(data_alvo, limit=5):
+    """Busca notícias exclusivas sobre o IBOVESPA na data do evento."""
     try:
-        query = f"{ticker}"
+        query = "Ibovespa bolsa B3"
         query_encoded = urllib.parse.quote(query)
 
-        data_ini_str = data_inicio.strftime("%Y-%m-%d")
-        data_fim_str = (data_fim + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+        data_ini_str = (data_alvo - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        data_fim_str = (data_alvo + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
-        rss_url = f"https://news.google.com/rss/search?q={query_encoded}+after:{data_ini_str}+before:{data_fim_str}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
+        rss_url = (
+            f"https://news.google.com/rss/search?q={query_encoded}"
+            f"+after:{data_ini_str}+before:{data_fim_str}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
+        )
 
         feed = feedparser.parse(rss_url)
         noticias = []
-
         for entry in feed.entries[:limit]:
             noticias.append(
                 {
@@ -84,33 +95,84 @@ def buscar_noticias_rss_google(ticker, data_inicio, data_fim, limit=5):
                     "publicado": getattr(entry, "published", ""),
                 }
             )
-
         return noticias
     except Exception as e:
-        logger.error(f"Erro ao buscar notícias RSS: {e}")
+        logger.error(f"Erro ao buscar notícias IBOVESPA: {e}")
         return []
 
+
+# --- GERENCIAMENTO DE LINHAS DINÂMICAS (SESSION STATE) ---
+if "linhas_dinamicas" not in st.session_state:
+    st.session_state.linhas_dinamicas = []
 
 # --- BARRA LATERAL (INPUTS) ---
 st.sidebar.header("⚙️ Parâmetros da Análise")
 
-# Ticker via input de texto simples (sem ler do banco)
-ticker_selecionado = st.sidebar.text_input(
-    "Digite o Ticker do Ativo:", value="PETR4"
-).upper().strip()
+ticker_selecionado = (
+    st.sidebar.text_input("Digite o Ticker do Ativo:", value="PETR4")
+    .upper()
+    .strip()
+)
 
 st.sidebar.subheader("Intervalo Temporal")
 di = st.sidebar.date_input("Data Inicial (di):", pd.to_datetime("2026-09-01"))
 df_data = st.sidebar.date_input("Data Final (df):", pd.to_datetime("2026-10-30"))
 
-st.sidebar.subheader("📈 Índices de Mercado (Yahoo Finance)")
+st.sidebar.subheader("📈 Índices e Moedas (Yahoo Finance)")
+opcoes_indices = {
+    "IBOVESPA (^BVSP)": "^BVSP",
+    "Dólar (USD/BRL)": "USDBRL=X",
+    "S&P 500 (^GSPC)": "^GSPC",
+    "IFIX (^IFIX)": "^IFIX",
+}
 indices_selecionados = st.sidebar.multiselect(
-    "Selecione os Índices para Comparação:",
-    options=["IBOVESPA (^BVSP)"],
+    "Selecione para Comparação:",
+    options=list(opcoes_indices.keys()),
     default=["IBOVESPA (^BVSP)"],
 )
 
-st.sidebar.subheader("🌐 Filtro de Investidores (Gráfico de Fluxo)")
+# Gatilho de variação do IBOVESPA (padrão 10%, ajustável se desejar testar outros valores)
+gatilho_ibov = st.sidebar.number_input(
+    "Alerta de Variação IBOVESPA (%):",
+    min_value=0.5,
+    max_value=50.0,
+    value=10.0,
+    step=0.5,
+    help="Exibe um marcador no gráfico e libera as notícias do IBOVESPA nos dias em que a variação absoluta atingir este percentual.",
+)
+
+# --- CONTROLE DE LINHAS DINÂMICAS NA SIDEBAR ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("📍 Marcadores Dinâmicos nos Gráficos")
+
+with st.sidebar.form("form_nova_linha", clear_on_submit=True):
+    nova_data = st.date_input("Data do Evento:", value=di)
+    novo_texto = st.text_input(
+        "Descrição (ex: Copom, Balanço):", placeholder="Nome do evento"
+    )
+    nova_cor = st.color_picker("Cor da Linha:", value="#FF4B4B")
+    btn_add = st.form_submit_button("➕ Adicionar Linha")
+
+    if btn_add and novo_texto.strip():
+        st.session_state.linhas_dinamicas.append(
+            {
+                "data": pd.to_datetime(nova_data),
+                "texto": novo_texto.strip(),
+                "cor": nova_cor,
+            }
+        )
+
+if st.session_state.linhas_dinamicas:
+    st.sidebar.caption("Linhas ativas:")
+    for i, item in enumerate(st.session_state.linhas_dinamicas):
+        col_txt, col_del = st.sidebar.columns([4, 1])
+        col_txt.write(f"• {item['data'].strftime('%d/%m/%Y')}: **{item['texto']}**")
+        if col_del.button("🗑️", key=f"del_linha_{i}"):
+            st.session_state.linhas_dinamicas.pop(i)
+            st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🌐 Filtro de Investidores")
 categorias_disponiveis = [
     "Estrangeiro",
     "Institucional",
@@ -119,14 +181,14 @@ categorias_disponiveis = [
     "Outros",
 ]
 categorias_selecionadas = st.sidebar.multiselect(
-    "Selecione as categorias para exibir:",
+    "Selecione as categorias:",
     options=categorias_disponiveis,
     default=categorias_disponiveis,
 )
 
+# --- PROCESSAMENTO E GRÁFICOS ---
 if ticker_selecionado and di and df_data:
     try:
-        # CONSULTA DIRETA E LEVE: Apenas o Ticker e Período exatos
         query_ativo = """
             SELECT * FROM public.cotacoes
             WHERE ticker = %(ticker)s
@@ -140,20 +202,25 @@ if ticker_selecionado and di and df_data:
         }
         df_acao = pd.read_sql(query_ativo, con=engine, params=params)
 
-        # Índices via yfinance
+        # Carrega índices selecionados + garante IBOVESPA para monitoramento de 10%
         dict_indices = {}
-        if "IBOVESPA (^BVSP)" in indices_selecionados:
-            dict_indices["IBOVESPA"] = carregar_indice_yfinance(
-                "^BVSP", di, df_data
-            )
-        if "IFIX (^IFIX)" in indices_selecionados:
-            dict_indices["IFIX"] = carregar_indice_yfinance(
-                "^IFIX", di, df_data
-            )
-        if "S&P 500 (^GSPC)" in indices_selecionados:
-            dict_indices["S&P 500"] = carregar_indice_yfinance(
-                "^GSPC", di, df_data
-            )
+        for nome_exibicao in indices_selecionados:
+            symbol = opcoes_indices[nome_exibicao]
+            nome_chave = nome_exibicao.split(" (")[0]
+            df_carregado = carregar_indice_yfinance(symbol, di, df_data)
+            if not df_carregado.empty:
+                dict_indices[nome_chave] = df_carregado
+
+        df_ibov_monitor = dict_indices.get(
+            "IBOVESPA", carregar_indice_yfinance("^BVSP", di, df_data)
+        )
+
+        # Identifica dias com variação >= gatilho_ibov (ex: 10%)
+        eventos_ibov_extremos = pd.DataFrame()
+        if not df_ibov_monitor.empty and "var_pct" in df_ibov_monitor.columns:
+            eventos_ibov_extremos = df_ibov_monitor[
+                df_ibov_monitor["var_pct"].abs() >= gatilho_ibov
+            ].copy()
 
         # Fluxo de Investidores
         query_fluxo = """
@@ -171,7 +238,6 @@ if ticker_selecionado and di and df_data:
         if not df_acao.empty:
             df_acao["data_pregao"] = pd.to_datetime(df_acao["data_pregao"])
 
-            # Tratamentos de Volume e Preços
             s_vol = df_acao["volume_financeiro"].astype(float)
             df_acao["vol_calculado"] = (
                 s_vol / 100.0 if s_vol.max() > 1_000_000_000 else s_vol
@@ -225,44 +291,36 @@ if ticker_selecionado and di and df_data:
 
             st.markdown("---")
 
-            # Datas dos Turnos Eleitorais
-            dt_turno1 = pd.to_datetime("2026-10-05")
-            dt_turno2 = pd.to_datetime("2026-10-26")
-
-            def adicionar_linhas_eleicao(fig, df_ref, col_data_name):
+            # --- FUNÇÕES AUXILIARES DOS GRÁFICOS ---
+            def adicionar_linhas_dinamicas(fig, df_ref, col_data_name):
+                if not st.session_state.linhas_dinamicas:
+                    return
                 min_dt = df_ref[col_data_name].min()
                 max_dt = df_ref[col_data_name].max()
 
-                if min_dt <= dt_turno1 <= max_dt:
-                    fig.add_vline(
-                        x=dt_turno1.timestamp() * 1000,
-                        line_width=2,
-                        line_dash="dash",
-                        line_color="#0066cc",
-                        annotation_text="1º Turno (05/10/2026)",
-                        annotation_position="top left",
-                        annotation_font_color="#0066cc",
-                    )
-
-                if min_dt <= dt_turno2 <= max_dt:
-                    fig.add_vline(
-                        x=dt_turno2.timestamp() * 1000,
-                        line_width=2,
-                        line_dash="dash",
-                        line_color="#d62728",
-                        annotation_text="2º Turno (26/10/2026)",
-                        annotation_position="top right",
-                        annotation_font_color="#d62728",
-                    )
+                for linha in st.session_state.linhas_dinamicas:
+                    dt_evento = linha["data"]
+                    if min_dt <= dt_evento <= max_dt:
+                        fig.add_vline(
+                            x=dt_evento.timestamp() * 1000,
+                            line_width=2,
+                            line_dash="dash",
+                            line_color=linha["cor"],
+                            annotation_text=linha["texto"],
+                            annotation_position="top left",
+                            annotation_font_color=linha["cor"],
+                        )
 
             def adicionar_traces_indices(fig, col_target="fechamento"):
                 cores_indices = {
                     "IBOVESPA": "#9467bd",
+                    "Dólar": "#2ca02c",
                     "IFIX": "#8c564b",
                     "S&P 500": "#e377c2",
                 }
                 estilos_indices = {
                     "IBOVESPA": "dash",
+                    "Dólar": "solid",
                     "IFIX": "dot",
                     "S&P 500": "dashdot",
                 }
@@ -270,33 +328,71 @@ if ticker_selecionado and di and df_data:
 
                 for idx_nome, df_idx in dict_indices.items():
                     if not df_idx.empty:
+                        df_clean = df_idx.dropna(subset=["fechamento", "volume"])
                         y_val = (
-                            df_idx["volume"]
+                            df_clean["volume"]
                             if col_target == "volume"
-                            else df_idx["fechamento"]
+                            else df_clean["fechamento"]
                         )
+
                         fig.add_trace(
                             go.Scatter(
-                                x=df_idx["data_pregao"],
+                                x=df_clean["data_pregao"],
                                 y=y_val,
                                 mode="lines",
                                 name=f"{idx_nome}",
                                 yaxis="y2",
+                                connectgaps=True,
                                 line=dict(
-                                    color=cores_indices.get(
-                                        idx_nome, "#7f7f7f"
-                                    ),
-                                    width=1.5,
-                                    dash=estilos_indices.get(
-                                        idx_nome, "dash"
-                                    ),
+                                    color=cores_indices.get(idx_nome, "#7f7f7f"),
+                                    width=1.8,
+                                    dash=estilos_indices.get(idx_nome, "dash"),
                                 ),
                             )
                         )
                         tem_secundario = True
+
+                        # Adiciona SÍMBOLO DE ALERTA nos dias de variação >= gatilho_ibov no IBOVESPA
+                        if (
+                            idx_nome == "IBOVESPA"
+                            and col_target == "fechamento"
+                            and not eventos_ibov_extremos.empty
+                        ):
+                            hover_texts = []
+                            for _, row_ev in eventos_ibov_extremos.iterrows():
+                                dt_str = row_ev["data_pregao"].strftime("%d/%m/%Y")
+                                g_min = row_ev["data_pregao"].strftime("%m/%d/%Y")
+                                g_max = (
+                                    row_ev["data_pregao"] + pd.Timedelta(days=1)
+                                ).strftime("%m/%d/%Y")
+                                link_news = f"https://www.google.com/search?q=Ibovespa&tbm=nws&tbs=cdr:1,cd_min:{g_min},cd_max:{g_max}"
+                                hover_texts.append(
+                                    f"<b>⚠️ ALERTA IBOVESPA ({dt_str})</b><br>"
+                                    f"Variação: <b>{row_ev['var_pct']:+.2f}%</b><br>"
+                                    f"<a href='{link_news}' target='_blank' style='color:#ffeb3b;'>🔗 Clique aqui para abrir notícias do dia</a>"
+                                )
+
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=eventos_ibov_extremos["data_pregao"],
+                                    y=eventos_ibov_extremos["fechamento"],
+                                    mode="markers",
+                                    name=f"Alerta IBOV (≥{gatilho_ibov}%)",
+                                    yaxis="y2",
+                                    marker=dict(
+                                        symbol="star",
+                                        size=15,
+                                        color="#ff0000",
+                                        line=dict(width=1.5, color="#ffffff"),
+                                    ),
+                                    text=hover_texts,
+                                    hoverinfo="text",
+                                )
+                            )
+
                 return tem_secundario
 
-            # --- GRÁFICO 1: EVOLUÇÃO DO VOLUME ---
+            # --- GRÁFICO 1: VOLUME ---
             st.markdown(
                 f"### 📈 Volume Financeiro: {ticker_selecionado} vs Índices"
             )
@@ -311,7 +407,7 @@ if ticker_selecionado and di and df_data:
                 )
             )
             tem_y2_vol = adicionar_traces_indices(fig_vol, col_target="volume")
-            adicionar_linhas_eleicao(fig_vol, df_acao, "data_pregao")
+            adicionar_linhas_dinamicas(fig_vol, df_acao, "data_pregao")
             fig_vol.update_layout(
                 xaxis_title="Data",
                 yaxis=dict(title=f"Volume {ticker_selecionado} (R$)"),
@@ -323,7 +419,7 @@ if ticker_selecionado and di and df_data:
                     else None
                 ),
                 margin=dict(l=20, r=20, t=30, b=20),
-                hovermode="x unified",
+                hovermode="closest",
                 template="plotly_white",
                 legend=dict(
                     orientation="h",
@@ -335,7 +431,7 @@ if ticker_selecionado and di and df_data:
             )
             st.plotly_chart(fig_vol, use_container_width=True)
 
-            # --- GRÁFICO 2: FLUXO DE INVESTIDORES vs ÍNDICES ---
+            # --- GRÁFICO 2: FLUXO DE INVESTIDORES ---
             st.markdown(
                 "### 🌐 Fluxo Líquido por Categoria de Investidor vs Índices"
             )
@@ -363,19 +459,21 @@ if ticker_selecionado and di and df_data:
                 tem_y2_fluxo = adicionar_traces_indices(
                     fig_fluxo, col_target="fechamento"
                 )
-                adicionar_linhas_eleicao(fig_fluxo, df_fluxo, "data_pregao")
+                adicionar_linhas_dinamicas(fig_fluxo, df_fluxo, "data_pregao")
                 fig_fluxo.update_layout(
                     xaxis_title="Data",
                     yaxis=dict(title="Saldo Líquido (R$)"),
                     yaxis2=(
                         dict(
-                            title="Pontos Índices", overlaying="y", side="right"
+                            title="Pontos / Cotação",
+                            overlaying="y",
+                            side="right",
                         )
                         if tem_y2_fluxo
                         else None
                     ),
                     margin=dict(l=20, r=20, t=30, b=20),
-                    hovermode="x unified",
+                    hovermode="closest",
                     template="plotly_white",
                     legend=dict(
                         orientation="h",
@@ -391,7 +489,7 @@ if ticker_selecionado and di and df_data:
                     "Nenhum dado de fluxo de investidores encontrado para o período selecionado."
                 )
 
-            # --- GRÁFICO 3: PREÇO MÉDIO vs ÍNDICES ---
+            # --- GRÁFICO 3: PREÇO MÉDIO ---
             st.markdown(f"### 🏷️ Preço Médio: {ticker_selecionado} vs Índices")
             fig_preco = go.Figure()
             fig_preco.add_trace(
@@ -406,19 +504,19 @@ if ticker_selecionado and di and df_data:
             tem_y2_preco = adicionar_traces_indices(
                 fig_preco, col_target="fechamento"
             )
-            adicionar_linhas_eleicao(fig_preco, df_acao, "data_pregao")
+            adicionar_linhas_dinamicas(fig_preco, df_acao, "data_pregao")
             fig_preco.update_layout(
                 xaxis_title="Data",
                 yaxis=dict(title=f"Preço Médio {ticker_selecionado} (R$)"),
                 yaxis2=(
                     dict(
-                        title="Pontos Índices", overlaying="y", side="right"
+                        title="Pontos / Cotação", overlaying="y", side="right"
                     )
                     if tem_y2_preco
                     else None
                 ),
                 margin=dict(l=20, r=20, t=30, b=20),
-                hovermode="x unified",
+                hovermode="closest",
                 template="plotly_white",
                 legend=dict(
                     orientation="h",
@@ -429,8 +527,56 @@ if ticker_selecionado and di and df_data:
                 ),
             )
             st.plotly_chart(fig_preco, use_container_width=True)
+            # --- EXPANDER FECHADO: NOTÍCIAS DO IBOVESPA LOGO ABAIXO DO PREÇO MÉDIO ---
+            with st.expander(
+                    f"📰 Alertas e Notícias do IBOVESPA (Variação ≥ {gatilho_ibov}%)",
+                    expanded=False,
+            ):
+                if not eventos_ibov_extremos.empty:
+                    abas_datas = [
+                        f"⭐ {row['data_pregao'].strftime('%d/%m/%Y')} ({row['var_pct']:+.2f}%)"
+                        for _, row in eventos_ibov_extremos.iterrows()
+                    ]
+                    tabs = st.tabs(abas_datas)
 
-            # --- GRÁFICO 4: PREÇO DE ABERTURA VS FECHAMENTO ---
+                    for tab, (_, row_ev) in zip(
+                            tabs, eventos_ibov_extremos.iterrows()
+                    ):
+                        with tab:
+                            dt_ev = row_ev["data_pregao"]
+                            dt_str = dt_ev.strftime("%d/%m/%Y")
+                            st.info(
+                                f"O **IBOVESPA** registrou variação de **{row_ev['var_pct']:+.2f}%** "
+                                f"e fechou aos **{row_ev['fechamento']:,.0f} pontos** em **{dt_str}**."
+                            )
+
+                            noticias = buscar_noticias_ibovespa(dt_ev)
+                            if noticias:
+                                for n in noticias:
+                                    st.markdown(
+                                        f"#### 🔗 [{n['titulo']}]({n['link']})"
+                                    )
+                                    if n["publicado"]:
+                                        st.caption(
+                                            f"🕒 Publicado em: {n['publicado']}"
+                                        )
+                            else:
+                                g_min = dt_ev.strftime("%m/%d/%Y")
+                                g_max = (
+                                        dt_ev + pd.Timedelta(days=1)
+                                ).strftime("%m/%d/%Y")
+                                url_gnews = f"https://www.google.com/search?q=Ibovespa&tbm=nws&tbs=cdr:1,cd_min:{g_min},cd_max:{g_max}"
+                                st.markdown(
+                                    f"#### 🔗 [Abrir manchetes do IBOVESPA no Google News para {dt_str}]({url_gnews})"
+                                )
+                else:
+                    st.info(
+                        f"Nenhuma variação diária do **IBOVESPA** atingiu **±{gatilho_ibov}%** no intervalo selecionado. "
+                        f"(Dica: reduza o valor de 'Alerta de Variação IBOVESPA (%)' na barra lateral para visualizar dias com oscilações menores)."
+                    )
+
+
+            # --- GRÁFICO 4: ABERTURA VS FECHAMENTO ---
             st.markdown(
                 f"### 🔔 Preço de Abertura vs Fechamento: {ticker_selecionado}"
             )
@@ -456,19 +602,19 @@ if ticker_selecionado and di and df_data:
             tem_y2_abe_ult = adicionar_traces_indices(
                 fig_abe_ult, col_target="fechamento"
             )
-            adicionar_linhas_eleicao(fig_abe_ult, df_acao, "data_pregao")
+            adicionar_linhas_dinamicas(fig_abe_ult, df_acao, "data_pregao")
             fig_abe_ult.update_layout(
                 xaxis_title="Data",
                 yaxis=dict(title="Preço (R$)"),
                 yaxis2=(
                     dict(
-                        title="Pontos Índices", overlaying="y", side="right"
+                        title="Pontos / Cotação", overlaying="y", side="right"
                     )
                     if tem_y2_abe_ult
                     else None
                 ),
                 margin=dict(l=20, r=20, t=30, b=20),
-                hovermode="x unified",
+                hovermode="closest",
                 template="plotly_white",
                 legend=dict(
                     orientation="h",
@@ -480,11 +626,10 @@ if ticker_selecionado and di and df_data:
             )
             st.plotly_chart(fig_abe_ult, use_container_width=True)
 
-            # --- DETALHAMENTO DIÁRIO (TEXTO / MÉTRICAS) ---
+            # --- DETALHAMENTO DIÁRIO ---
             st.markdown(
                 f"### 📌 Detalhamento Diário do Pregão: **{ticker_selecionado}**"
             )
-
             min_dt_val = df_acao["data_pregao"].min().date()
             max_dt_val = df_acao["data_pregao"].max().date()
 
@@ -497,16 +642,12 @@ if ticker_selecionado and di and df_data:
             )
 
             row_dia = df_acao[df_acao["data_pregao"].dt.date == data_detalhe]
-
             if not row_dia.empty:
                 r = row_dia.iloc[0]
-
                 v_abe = r["preco_abertura_corrigido"]
                 v_ult = r["preco_fechamento_corrigido"]
-
                 s_max = float(r["preco_maximo"])
                 v_max = s_max / 100.0 if s_max > 10000 else s_max
-
                 s_min = float(r["preco_minimo"])
                 v_min = s_min / 100.0 if s_min > 10000 else s_min
 
@@ -519,71 +660,13 @@ if ticker_selecionado and di and df_data:
                 )
                 col_max_c.metric("📈 Máxima do Dia", f"R$ {v_max:.2f}")
                 col_min_c.metric("📉 Mínima do Dia", f"R$ {v_min:.2f}")
-
-                st.info(
-                    f"🗓️ **Resumo do Pregão ({data_detalhe.strftime('%d/%m/%Y')}):** "
-                    f"O papel **{ticker_selecionado}** abriu cotado a **R$ {v_abe:.2f}**, atingiu a máxima de **R$ {v_max:.2f}** "
-                    f"e a mínima de **R$ {v_min:.2f}**, encerrando o dia a **R$ {v_ult:.2f}**."
-                )
             else:
                 st.warning(
-                    f"Não houve pregão registrado para **{ticker_selecionado}** no dia {data_detalhe.strftime('%d/%m/%Y')} (final de semana ou feriado)."
+                    f"Não houve pregão registrado para **{ticker_selecionado}** no dia {data_detalhe.strftime('%d/%m/%Y')}."
                 )
 
             st.markdown("---")
 
-            # --- SEÇÃO DE NOTÍCIAS (ESTILO RESULTADOS DO GOOGLE) ---
-            with st.expander(
-                f"🔍 **Notícias Google: Manchetes de {ticker_selecionado} nos Dias de Pico**",
-                expanded=True,
-            ):
-                st.markdown(
-                    f"Resultados de busca para **{ticker_selecionado}** nos **5 dias de maior volume financeiro**:"
-                )
-
-                top_5_dias = df_acao.sort_values(
-                    by="vol_calculado", ascending=False
-                ).head(5)
-
-                for idx, row in top_5_dias.reset_index(drop=True).iterrows():
-                    data_dt = row["data_pregao"]
-                    data_str = data_dt.strftime("%d/%m/%Y")
-                    vol_fmt = (
-                        f"R$ {row['vol_calculado']:,.2f}".replace(",", "X")
-                        .replace(".", ",")
-                        .replace("X", ".")
-                    )
-                    preco_fmt = f"R$ {row['preco_medio_corrigido']:.2f}"
-
-                    st.markdown(
-                        f"### {idx + 1}. Pregão de {data_str} | Volume: `{vol_fmt}` | Preço Médio: `{preco_fmt}`"
-                    )
-
-                    noticias_dia = buscar_noticias_rss_google(
-                        ticker_selecionado, data_dt, data_dt
-                    )
-
-                    if noticias_dia:
-                        for item in noticias_dia:
-                            st.markdown(
-                                f"#### 🔗 [{item['titulo']}]({item['link']})"
-                            )
-                            if item["publicado"]:
-                                st.caption(
-                                    f"🕒 Publicado em: {item['publicado']}"
-                                )
-                    else:
-                        g_min = data_dt.strftime("%m/%d/%Y")
-                        g_max = (data_dt + pd.Timedelta(days=1)).strftime(
-                            "%m/%d/%Y"
-                        )
-                        url_gnews = f"https://www.google.com/search?q={ticker_selecionado}&tbm=nws&tbs=cdr:1,cd_min:{g_min},cd_max:{g_max}"
-
-                        st.markdown(
-                            f"#### 🔗 [Ver todos os resultados no Google News para {ticker_selecionado} em {data_str}]({url_gnews})"
-                        )
-
-                    st.markdown("---")
 
             with st.expander("Ver dados brutos"):
                 st.dataframe(df_acao, use_container_width=True)
