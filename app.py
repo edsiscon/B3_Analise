@@ -190,7 +190,7 @@ categorias_selecionadas = st.sidebar.multiselect(
 components.html(
     f"""
     <script>
-        window.parent.console.log("Realizado por: Gabriel, Maria e Carlos Eduardo (2026.02)");
+        window.parent.console.log("Realizado por: Gabriel Felix, Maria Carolina e Carlos Andrade (2026.02)");
     </script>
     """,
     height=0,
